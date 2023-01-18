@@ -5,6 +5,8 @@ from urllib import parse
 
 import arrow
 import orjson
+import copy
+import logging
 import requests
 from memoization import cached
 from singer_sdk import typing as th  # JSON Schema typing helpers
@@ -69,6 +71,10 @@ class OutboundMessageStream(PostmarkStream):
         th.Property("Sandboxed", th.StringType),
     ).to_dict()
 
+    def __init__(self, *args, **kwargs) -> None:
+        self.receivers_done = set()
+        super().__init__(*args, **kwargs)
+
     def get_next_page_token(self, response: requests.Response, previous_token: Optional[Any]) -> Optional[Any]:
         """Return a token for identifying next page or None if no more pages."""
 
@@ -129,16 +135,24 @@ class OutboundMessageStream(PostmarkStream):
             "MessageID": record["MessageID"],
             "TrackOpens": record["TrackOpens"],
             "TrackLinks": record["TrackLinks"],
+            "Recipients": record["Recipients"],
         }
+
+    def _sync_children(self, child_context: dict) -> None:
+        for child_stream in self.child_streams:
+            # If opens for a certain email address were already fetched in this run, skip them
+            if isinstance(child_stream, SingleOutboundMessageOpenStream) and all(r in self.receivers_done for r in child_context['Recipients']):
+                logging.info(f"SKIPPING FOR {child_context['Recipients']}")
+                continue
+            if child_stream.selected or child_stream.has_selected_descendents:
+                child_stream.sync(context=child_context)
+            for r in child_context['Recipients']:
+                self.receivers_done.add(r)
 
 
 class SingleOutboundMessageOpenStream(PostmarkStream):
-    # TODO: this gives more info on opens than the message details endpoint.
-    # maybe this should be a child stream from that one, and only request if there is an actual open event.
-
     name = "single_outbound_message_opens"
 
-    path = "/messages/outbound/opens/{MessageID}"
     records_jsonpath = "$.Opens[*]"
     primary_keys = ["MessageID", "Recipient"]
 
@@ -158,12 +172,36 @@ class SingleOutboundMessageOpenStream(PostmarkStream):
         th.Property("Recipient", th.StringType),
     ).to_dict()
 
-    def request_records(self, context: dict | None) -> Iterable[dict]:
-        # If tracking was not enabled for this message, skip the request for open details.
-        if context.get('TrackOpens'):
-            yield from super().request_records(context=context)
+    def __init__(self, per_receiver: bool = False, *args, **kwargs) -> None:
+        self.per_receiver = per_receiver
+        super().__init__(*args, **kwargs)
+
+    @property
+    def path(self) -> str:
+        if self.per_receiver:
+            return "/messages/outbound/opens"
+        return "/messages/outbound/opens/{MessageID}"
+
+    def request_records(self, context: Optional[dict]) -> Iterable[dict]:  # noqa: CCR001
+        if self.per_receiver:
+            if context and context['TrackOpens']:
+                for receiver in context['Recipients']:
+                    ctx = copy.deepcopy(context)
+                    ctx['Recipient'] = receiver
+                    yield from super().request_records(context=ctx)
+        else:
+            # If tracking was not enabled for this message, skip the request for open details.
+            if context and context.get('TrackOpens'):
+                yield from super().request_records(context=context)
+            yield []
 
     def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
+        if self.per_receiver:
+            return {
+                'count': self.count_by,
+                'offset': 0,
+                'recipient': context['Recipient'],
+            }
         return {
             'count': self.count_by,
             'offset': 0,

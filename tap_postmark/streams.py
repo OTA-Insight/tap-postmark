@@ -130,89 +130,12 @@ class OutboundMessageStream(PostmarkStream):
 
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         """Return a context dictionary for child streams."""
-        # TODO: add whether or not it was tracked or not, and then we can skip a request if we dont need it? Both for opens and for details.
         return {
             "MessageID": record["MessageID"],
             "TrackOpens": record["TrackOpens"],
             "TrackLinks": record["TrackLinks"],
             "Recipients": record["Recipients"],
         }
-
-    def _sync_children(self, child_context: dict) -> None:
-        for child_stream in self.child_streams:
-            # If opens for a certain email address were already fetched in this run, skip them
-            if isinstance(child_stream, SingleOutboundMessageOpenStream) and all(r in self.receivers_done for r in child_context['Recipients']):
-                logging.info(f"SKIPPING FOR {child_context['Recipients']}")
-                continue
-            if child_stream.selected or child_stream.has_selected_descendents:
-                child_stream.sync(context=child_context)
-            for r in child_context['Recipients']:
-                self.receivers_done.add(r)
-
-
-class SingleOutboundMessageOpenStream(PostmarkStream):
-    name = "single_outbound_message_opens"
-
-    records_jsonpath = "$.Opens[*]"
-    primary_keys = ["MessageID", "Recipient"]
-
-    count_by: int = 500
-
-    # SingleOutboundMessageOpenStream streams should be invoked once per parent epic:
-    parent_stream_type = OutboundMessageStream
-
-    # Assume opens don't have `updated_at` incremented when outbound_messages are changed:
-    ignore_parent_replication_keys = True
-
-    schema = th.PropertiesList(
-        th.Property("MessageID", th.StringType),
-        th.Property("MessageStream", th.StringType),
-        th.Property("Tag", th.StringType),
-        th.Property("ReceivedAt", th.DateTimeType),
-        th.Property("Recipient", th.StringType),
-    ).to_dict()
-
-    def __init__(self, per_receiver: bool = False, *args, **kwargs) -> None:
-        self.per_receiver = per_receiver
-        super().__init__(*args, **kwargs)
-
-    @property
-    def path(self) -> str:
-        if self.per_receiver:
-            return "/messages/outbound/opens"
-        return "/messages/outbound/opens/{MessageID}"
-
-    def request_records(self, context: Optional[dict]) -> Iterable[dict]:  # noqa: CCR001
-        if self.per_receiver:
-            if context and context['TrackOpens']:
-                for receiver in context['Recipients']:
-                    ctx = copy.deepcopy(context)
-                    ctx['Recipient'] = receiver
-                    yield from super().request_records(context=ctx)
-        else:
-            # If tracking was not enabled for this message, skip the request for open details.
-            if context and context.get('TrackOpens'):
-                yield from super().request_records(context=context)
-            yield []
-
-    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
-        if self.per_receiver:
-            return {
-                'count': self.count_by,
-                'offset': 0,
-                'recipient': context['Recipient'],
-            }
-        return {
-            'count': self.count_by,
-            'offset': 0,
-        }
-
-    def validate_response(self, response: requests.Response) -> None:
-        if response.status_code == 422:
-            if response.json()['ErrorCode'] != 701:
-                return super().validate_response(response)
-
-        return None
 
 
 class SingleOutboundMessageEventStream(PostmarkStream):
@@ -224,7 +147,6 @@ class SingleOutboundMessageEventStream(PostmarkStream):
 
     count_by: int = 500
 
-    # SingleOutboundMessageOpenStream streams should be invoked once per parent epic:
     parent_stream_type = OutboundMessageStream
 
     # Assume opens don't have `updated_at` incremented when outbound_messages are changed:
@@ -251,6 +173,86 @@ class SingleOutboundMessageEventStream(PostmarkStream):
         return row
 
 
+class StatsOutboundOvervewStream(PostmarkStream):
+    name = "stats_outbound_overview"
+
+    path = "/stats/outbound"
+    primary_keys = ["Tag", "Date"]
+    replication_key = "Date"
+    start_date: str = '2023-01-01T00:00:00.000000+00:00'
+
+    schema = th.PropertiesList(
+        th.Property("Date", th.DateType),
+        th.Property("Tag", th.StringType),
+        th.Property("Sent", th.IntegerType),
+        th.Property("Bounced", th.IntegerType),
+        th.Property("SMTPApiErrors", th.IntegerType),
+        th.Property("BounceRate", th.NumberType),
+        th.Property("SpamComplaints", th.StringType),
+        th.Property("SpamComplaintsRate", th.NumberType),
+        th.Property("Opens", th.IntegerType),
+        th.Property("UniqueOpens", th.IntegerType),
+        th.Property("Tracked", th.IntegerType),
+        th.Property("WithLinkTracking", th.IntegerType),
+        th.Property("WithOpenTracking", th.IntegerType),
+        th.Property("TotalTrackedLinksSent", th.IntegerType),
+        th.Property("UniqueLinksClicked", th.IntegerType),
+        th.Property("TotalClicks", th.IntegerType),
+        th.Property("WithClientRecorded", th.IntegerType),
+        th.Property("WithPlatformRecorded", th.IntegerType),
+    ).to_dict()
+
+    def get_next_page_token(self, response: requests.Response, previous_token: Optional[Any]) -> Optional[Any]:
+        """Return a token for identifying next page or None if no more pages."""
+
+        # Request params from previous request
+        req_url = response.request.url
+        req_params = parse.parse_qs(parse.urlparse(req_url).query)
+        params = {k: v[0] for (k, v) in req_params.items()}
+
+        params['fromdate'] = arrow.get(params['todate']).isoformat()
+        params['todate'] = arrow.get(params['fromdate']).shift(days=1).isoformat()
+
+        # If we have processed the entire history, stop requesting
+        cutoff_date = arrow.utcnow()
+        if arrow.get(params['fromdate']) >= cutoff_date:
+            return None
+
+        return params
+
+    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
+        if next_page_token is None:
+
+            # Determine the starting_date
+            starting_dt = self.get_starting_timestamp(context)
+            if starting_dt is None:
+                starting_dt = arrow.get(self.start_date).to('US/Eastern')
+                # print("starting_dt is None, now: " + starting_dt.isoformat())
+            else:
+                starting_dt = arrow.get(starting_dt).to('US/Eastern')
+                # print("starting_dt exists, now: " + starting_dt.isoformat())
+
+            next_page_token = {
+                'fromdate': starting_dt.isoformat(),
+                'todate': starting_dt.shift(days=1).isoformat(),
+            }
+
+        # next_page_token['tag'] = 'lala'
+        return next_page_token
+
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        d = response.json()
+
+        req_params = parse.parse_qs(parse.urlparse(response.request.url).query)
+        params = {k: v[0] for (k, v) in req_params.items()}
+
+        d['Tag'] = params.get('tag', 'lala')
+        d["Date"] = params['fromdate']
+
+        yield d
+
+
+
 class SingleOutboundMessageClickStream(PostmarkStream):
     name = "single_outbound_message_clicks"
 
@@ -260,7 +262,6 @@ class SingleOutboundMessageClickStream(PostmarkStream):
 
     count_by: int = 500
 
-    # SingleOutboundMessageOpenStream streams should be invoked once per parent epic:
     parent_stream_type = OutboundMessageStream
 
     # Assume opens don't have `updated_at` incremented when outbound_messages are changed:

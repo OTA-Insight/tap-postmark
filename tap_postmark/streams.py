@@ -202,6 +202,15 @@ class StatsOutboundOvervewStream(PostmarkStream):
         th.Property("WithPlatformRecorded", th.IntegerType),
     ).to_dict()
 
+    tags_to_process = set()
+    processed_tags = set()
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.tags_to_process = set(self.config.get('tags', []))
+        if not self.tags_to_process:
+            raise Exception('Tags should be provided in the config')
+
     def get_next_page_token(self, response: requests.Response, previous_token: Optional[Any]) -> Optional[Any]:
         """Return a token for identifying next page or None if no more pages."""
 
@@ -210,19 +219,26 @@ class StatsOutboundOvervewStream(PostmarkStream):
         req_params = parse.parse_qs(parse.urlparse(req_url).query)
         params = {k: v[0] for (k, v) in req_params.items()}
 
+        # Shift daterange with a day
         params['fromdate'] = arrow.get(params['todate']).isoformat()
         params['todate'] = arrow.get(params['fromdate']).shift(days=1).isoformat()
 
-        # If we have processed the entire history, stop requesting
+        # If we have processed the entire history, stop requesting for this tag and move to the new tag
         cutoff_date = arrow.utcnow()
         if arrow.get(params['fromdate']) >= cutoff_date:
-            return None
+            # If there are still tags to do
+            if self.tags_to_process:
+                params = self.get_new_tag_start_params()
+            else:
+                # Daterange was finished and there are no tags to do
+                return None
 
         return params
 
-    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
-        if next_page_token is None:
+    def get_starting_timestamp_of_run(self, context):
+        """Returns the first timestamp to request for every tag in this run."""
 
+        if not hasattr(self, '_run_start_timestamp'):
             # Determine the starting_date
             starting_dt = self.get_starting_timestamp(context)
             if starting_dt is None:
@@ -232,10 +248,25 @@ class StatsOutboundOvervewStream(PostmarkStream):
                 starting_dt = arrow.get(starting_dt).to('US/Eastern')
                 # print("starting_dt exists, now: " + starting_dt.isoformat())
 
-            next_page_token = {
-                'fromdate': starting_dt.isoformat(),
-                'todate': starting_dt.shift(days=1).isoformat(),
-            }
+            self._run_start_timestamp = starting_dt
+
+        return self._run_start_timestamp
+
+    def get_new_tag_start_params(self):
+        """Take one of the tags and start a new daterange for it."""
+        starting_dt = self.get_starting_timestamp_of_run({})
+
+        return {
+            'fromdate': starting_dt.isoformat(),
+            'todate': starting_dt.shift(days=1).isoformat(),
+            'tag': self.tags_to_process.pop(),  # add a random one of the tags left to do to continue with
+        }
+
+    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
+        if next_page_token is None:
+            # This is the first request to be prepared
+
+            next_page_token = self.get_new_tag_start_params()
 
         # next_page_token['tag'] = 'lala'
         return next_page_token
@@ -250,7 +281,6 @@ class StatsOutboundOvervewStream(PostmarkStream):
         d["Date"] = params['fromdate']
 
         yield d
-
 
 
 class SingleOutboundMessageClickStream(PostmarkStream):

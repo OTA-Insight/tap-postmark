@@ -19,12 +19,17 @@ class TapPostmark(Tap):
             th.StringType,
             required=True,
             secret=True,  # Flag config as protected.
-            description="The token to authenticate against the API service"
+            description="The token to authenticate against the API service",
         ),
         th.Property(
             "start_dt",
             th.DateTimeType,
-            description="The earliest record datetime to sync"
+            description="The earliest record datetime to sync",
+        ),
+        th.Property(
+            "tags",
+            th.ArrayType(th.StringType),
+            description="Tags to query stats for",
         ),
     ).to_dict()
 

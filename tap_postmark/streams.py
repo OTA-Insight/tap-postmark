@@ -110,10 +110,8 @@ class OutboundMessageStream(PostmarkStream):
             starting_dt = self.get_starting_timestamp(context)
             if starting_dt is None:
                 starting_dt = arrow.get(self.start_date).to('US/Eastern')
-                # print("starting_dt is None, now: " + starting_dt.isoformat())
             else:
                 starting_dt = arrow.get(starting_dt).to('US/Eastern')
-                # print("starting_dt exists, now: " + starting_dt.isoformat())
 
             next_page_token = {
                 'count': self.count_by,
@@ -245,10 +243,8 @@ class StatsOutboundOvervewStream(PostmarkStream):
             starting_dt = self.get_starting_timestamp(context)
             if starting_dt is None:
                 starting_dt = arrow.get(self.start_date).to('US/Eastern')
-                # print("starting_dt is None, now: " + starting_dt.isoformat())
             else:
                 starting_dt = arrow.get(starting_dt).to('US/Eastern')
-                # print("starting_dt exists, now: " + starting_dt.isoformat())
 
             self._run_start_timestamp = starting_dt
 
@@ -258,24 +254,17 @@ class StatsOutboundOvervewStream(PostmarkStream):
         """Take one of the tags and start a new daterange for it."""
         starting_dt = self.get_starting_timestamp_of_run({})
 
-        d = {
+        return {
             'fromdate': starting_dt.isoformat(),
             'todate': starting_dt.shift(days=1).isoformat(),
+            'tag': self.tags_to_process.pop(),  # add a random one of the tags left to do to continue with
         }
-
-        tag = self.tags_to_process.pop()  # add a random one of the tags left to do to continue with
-        if tag:
-            d['tag'] = tag
-
-        return d
 
     def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
         if next_page_token is None:
             # This is the first request to be prepared
-
             next_page_token = self.get_new_tag_start_params()
 
-        # next_page_token['tag'] = 'lala'
         return next_page_token
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
@@ -285,7 +274,7 @@ class StatsOutboundOvervewStream(PostmarkStream):
         req_params = parse.parse_qs(parse.urlparse(response.request.url).query)
         params = {k: v[0] for (k, v) in req_params.items()}
 
-        d['Tag'] = params.get('tag', 'lala')
+        d['Tag'] = params.get('tag', '__all__')
         d["Date"] = params['fromdate']
 
         yield d
@@ -293,45 +282,4 @@ class StatsOutboundOvervewStream(PostmarkStream):
     def post_process(self, row: dict, context: Optional[dict]) -> dict:
         # Convert the date to UTC before putting it in the DB
         row['Date'] = arrow.get(row['Date']).to('utc').isoformat()
-        return row
-
-
-class SingleOutboundMessageClickStream(PostmarkStream):
-    name = "single_outbound_message_clicks"
-
-    path = "/messages/outbound/clicks/{MessageID}"
-    records_jsonpath = "$.Clicks[*]"
-    primary_keys = ["MessageID", "Recipient", "Type", "ReceivedAt"]
-
-    count_by: int = 500
-
-    parent_stream_type = OutboundMessageStream
-
-    # Assume opens don't have `updated_at` incremented when outbound_messages are changed:
-    ignore_parent_replication_keys = True
-
-    schema = th.PropertiesList(
-        th.Property("MessageID", th.StringType),
-        th.Property("ClickLocation", th.StringType),
-        th.Property("Recipient", th.StringType),
-        th.Property("ReceivedAt", th.DateTimeType),
-        th.Property("Tag", th.StringType),
-    ).to_dict()
-
-    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
-        return {
-            'count': self.count_by,
-            'offset': 0,
-        }
-
-    def validate_response(self, response: requests.Response) -> None:
-        if response.status_code == 422:
-            if response.json()['ErrorCode'] != 701:
-                return super().validate_response(response)
-
-        return None
-
-    def post_process(self, row: dict, context: Optional[dict]) -> dict:
-        row['Details'] = orjson.dumps(row['Details']).decode('utf-8')
-        row['MessageID'] = context['MessageID']
         return row

@@ -20,10 +20,6 @@ plugins:
       kind: password
     config:
       start_dt: '2023-01-07T00:00:00Z'
-      tags:
-        - "rateinsight"
-        - "revenueinsight"
-        - "marketinsight"
   loaders:
   - name: target-jsonl
     variant: andyh1203

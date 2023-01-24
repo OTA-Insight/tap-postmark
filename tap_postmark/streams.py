@@ -187,7 +187,7 @@ class StatsOutboundOvervewStream(PostmarkStream):
         th.Property("Bounced", th.IntegerType),
         th.Property("SMTPApiErrors", th.IntegerType),
         th.Property("BounceRate", th.NumberType),
-        th.Property("SpamComplaints", th.StringType),
+        th.Property("SpamComplaints", th.NumberType),
         th.Property("SpamComplaintsRate", th.NumberType),
         th.Property("Opens", th.IntegerType),
         th.Property("UniqueOpens", th.IntegerType),

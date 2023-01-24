@@ -37,8 +37,8 @@ class TapPostmark(Tap):
         """Return a list of discovered streams."""
         return [
             StatsOutboundOvervewStream(tap=self),
-            # OutboundMessageStream(tap=self),
-            # SingleOutboundMessageEventStream(tap=self),
+            OutboundMessageStream(tap=self),
+            SingleOutboundMessageEventStream(tap=self),
             # SingleOutboundMessageClickStream(tap=self),
         ]
 

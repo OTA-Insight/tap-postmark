@@ -169,6 +169,7 @@ class SingleOutboundMessageEventStream(PostmarkStream):
 
     def post_process(self, row: dict, context: Optional[dict]) -> dict:
         row['Details'] = orjson.dumps(row['Details']).decode('utf-8')
+        row['ReceivedAt'] = arrow.get(row['ReceivedAt']).to('utc').isoformat()
         row['MessageID'] = context['MessageID']
         return row
 
@@ -209,7 +210,8 @@ class StatsOutboundOvervewStream(PostmarkStream):
         super().__init__(*args, **kwargs)
         self.tags_to_process = set(self.config.get('tags', []))
         if not self.tags_to_process:
-            raise Exception('Tags should be provided in the config')
+            # Add a single tag, indicating 'no tag'
+            self.tags_to_process.add('')
 
     def get_next_page_token(self, response: requests.Response, previous_token: Optional[Any]) -> Optional[Any]:
         """Return a token for identifying next page or None if no more pages."""
@@ -256,11 +258,16 @@ class StatsOutboundOvervewStream(PostmarkStream):
         """Take one of the tags and start a new daterange for it."""
         starting_dt = self.get_starting_timestamp_of_run({})
 
-        return {
+        d = {
             'fromdate': starting_dt.isoformat(),
             'todate': starting_dt.shift(days=1).isoformat(),
-            'tag': self.tags_to_process.pop(),  # add a random one of the tags left to do to continue with
         }
+
+        tag = self.tags_to_process.pop()  # add a random one of the tags left to do to continue with
+        if tag:
+            d['tag'] = tag
+
+        return d
 
     def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
         if next_page_token is None:
@@ -272,6 +279,7 @@ class StatsOutboundOvervewStream(PostmarkStream):
         return next_page_token
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        # Add properties to the response object based on the parameters from its request, as they aren't in the actual response
         d = response.json()
 
         req_params = parse.parse_qs(parse.urlparse(response.request.url).query)
@@ -281,6 +289,11 @@ class StatsOutboundOvervewStream(PostmarkStream):
         d["Date"] = params['fromdate']
 
         yield d
+
+    def post_process(self, row: dict, context: Optional[dict]) -> dict:
+        # Convert the date to UTC before putting it in the DB
+        row['Date'] = arrow.get(row['Date']).to('utc').isoformat()
+        return row
 
 
 class SingleOutboundMessageClickStream(PostmarkStream):

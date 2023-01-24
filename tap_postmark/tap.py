@@ -5,7 +5,7 @@ from typing import List
 from singer_sdk import Stream, Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
 
-from .streams import OutboundMessageStream, SingleOutboundMessageEventStream, SingleOutboundMessageOpenStream
+from .streams import OutboundMessageStream, SingleOutboundMessageEventStream, StatsOutboundOvervewStream
 
 
 class TapPostmark(Tap):
@@ -19,20 +19,25 @@ class TapPostmark(Tap):
             th.StringType,
             required=True,
             secret=True,  # Flag config as protected.
-            description="The token to authenticate against the API service"
+            description="The token to authenticate against the API service",
         ),
         th.Property(
             "start_dt",
             th.DateTimeType,
-            description="The earliest record datetime to sync"
+            description="The earliest record datetime to sync",
+        ),
+        th.Property(
+            "tags",
+            th.ArrayType(th.StringType),
+            description="Tags to query stats for",
         ),
     ).to_dict()
 
     def discover_streams(self) -> List[Stream]:
         """Return a list of discovered streams."""
         return [
+            StatsOutboundOvervewStream(tap=self),
             OutboundMessageStream(tap=self),
-            # SingleOutboundMessageOpenStream(tap=self),
             SingleOutboundMessageEventStream(tap=self),
         ]
 

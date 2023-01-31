@@ -1,12 +1,10 @@
 """Stream type classes for tap-postmark."""
 
-from typing import Any, Optional, TypeVar, Iterable
+from typing import Any, Iterable, Optional, TypeVar
 from urllib import parse
 
 import arrow
 import orjson
-import copy
-import logging
 import requests
 from memoization import cached
 from singer_sdk import typing as th  # JSON Schema typing helpers
@@ -199,6 +197,107 @@ class StatsOutboundOvervewStream(PostmarkStream):
         th.Property("TotalClicks", th.IntegerType),
         th.Property("WithClientRecorded", th.IntegerType),
         th.Property("WithPlatformRecorded", th.IntegerType),
+    ).to_dict()
+
+    tags_to_process = set()
+    processed_tags = set()
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.tags_to_process = set(self.config.get('tags', []))
+        if not self.tags_to_process:
+            # Add a single tag, indicating 'no tag'
+            self.tags_to_process.add('')
+
+    def get_next_page_token(self, response: requests.Response, previous_token: Optional[Any]) -> Optional[Any]:
+        """Return a token for identifying next page or None if no more pages."""
+
+        # Request params from previous request
+        req_url = response.request.url
+        req_params = parse.parse_qs(parse.urlparse(req_url).query)
+        params = {k: v[0] for (k, v) in req_params.items()}
+
+        # Shift daterange with a day
+        params['fromdate'] = arrow.get(params['todate']).isoformat()
+        params['todate'] = arrow.get(params['fromdate']).shift(days=1).isoformat()
+
+        # If we have processed the entire history, stop requesting for this tag and move to the new tag
+        cutoff_date = arrow.utcnow()
+        if arrow.get(params['fromdate']) >= cutoff_date:
+            # If there are still tags to do
+            if self.tags_to_process:
+                params = self.get_new_tag_start_params()
+            else:
+                # Daterange was finished and there are no tags to do
+                return None
+
+        return params
+
+    def get_starting_timestamp_of_run(self, context):
+        """Returns the first timestamp to request for every tag in this run."""
+
+        if not hasattr(self, '_run_start_timestamp'):
+            # Determine the starting_date
+            starting_dt = self.get_starting_timestamp(context)
+            if starting_dt is None:
+                starting_dt = arrow.get(self.start_date).to('US/Eastern')
+            else:
+                starting_dt = arrow.get(starting_dt).to('US/Eastern')
+
+            self._run_start_timestamp = starting_dt
+
+        return self._run_start_timestamp
+
+    def get_new_tag_start_params(self):
+        """Take one of the tags and start a new daterange for it."""
+        starting_dt = self.get_starting_timestamp_of_run({})
+
+        return {
+            'fromdate': starting_dt.isoformat(),
+            'todate': starting_dt.shift(days=1).isoformat(),
+            'tag': self.tags_to_process.pop(),  # add a random one of the tags left to do to continue with
+        }
+
+    def get_url_params(self, context: Optional[dict], next_page_token: Optional[_TToken]) -> dict[str, Any]:
+        if next_page_token is None:
+            # This is the first request to be prepared
+            next_page_token = self.get_new_tag_start_params()
+
+        return next_page_token
+
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        # Add properties to the response object based on the parameters from its request, as they aren't in the actual response
+        d = response.json()
+
+        req_params = parse.parse_qs(parse.urlparse(response.request.url).query)
+        params = {k: v[0] for (k, v) in req_params.items()}
+
+        d['Tag'] = params.get('tag', '__all__')
+        d["Date"] = params['fromdate']
+
+        yield d
+
+    def post_process(self, row: dict, context: Optional[dict]) -> dict:
+        # Convert the date to UTC before putting it in the DB
+        row['Date'] = arrow.get(row['Date']).to('utc').isoformat()
+        return row
+
+
+class StatsOutboundPlatformUsageStream(PostmarkStream):
+    name = "stats_outbound_platform_usage"
+
+    path = "/stats/outbound/opens/platforms"
+    primary_keys = ["Tag", "Date"]
+    replication_key = "Date"
+    start_date: str = '2023-01-01T00:00:00.000000+00:00'
+
+    schema = th.PropertiesList(
+        th.Property("Date", th.DateType),
+        th.Property("Tag", th.StringType),
+        th.Property("Desktop", th.IntegerType),
+        th.Property("Mobile", th.IntegerType),
+        th.Property("Unknown", th.IntegerType),
+        th.Property("WebMail", th.IntegerType),
     ).to_dict()
 
     tags_to_process = set()

@@ -5,7 +5,7 @@ from typing import List
 from singer_sdk import Stream, Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
 
-from .streams import OutboundMessageStream, SingleOutboundMessageEventStream, StatsOutboundOvervewStream
+from .streams import OutboundMessageStream, SingleOutboundMessageEventStream, StatsOutboundOvervewStream, StatsOutboundPlatformUsageStream
 
 
 class TapPostmark(Tap):
@@ -39,6 +39,7 @@ class TapPostmark(Tap):
             StatsOutboundOvervewStream(tap=self),
             OutboundMessageStream(tap=self),
             SingleOutboundMessageEventStream(tap=self),
+            StatsOutboundPlatformUsageStream(tap=self),
         ]
 
 

@@ -41,6 +41,7 @@ class OutboundMessageStream(PostmarkStream):
     records_jsonpath = "$.Messages[*]"
     primary_keys = ["MessageID"]
     replication_key = "ReceivedAt"
+    is_timestamp_replication_key = True
 
     start_date: str = '2023-01-12T00:00:00.000000+00:00'
     timewindow_interval_minutes: int = 1
@@ -176,6 +177,7 @@ class StatsOutboundOvervewStream(PostmarkStream):
     path = "/stats/outbound"
     primary_keys = ["Tag", "Date"]
     replication_key = "Date"
+    is_timestamp_replication_key = True
     start_date: str = '2023-01-01T00:00:00.000000+00:00'
 
     schema = th.PropertiesList(
@@ -289,6 +291,7 @@ class StatsOutboundPlatformUsageStream(PostmarkStream):
     path = "/stats/outbound/opens/platforms"
     primary_keys = ["Tag", "Date"]
     replication_key = "Date"
+    is_timestamp_replication_key = True
     start_date: str = '2023-01-01T00:00:00.000000+00:00'
 
     schema = th.PropertiesList(
